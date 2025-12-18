@@ -2,7 +2,9 @@ const express = require('express');
 const app = express();
 const port = process.env.PORT || 3000;
 
-app.get('/', (req, res) => {
+app.use(express.static('public'));
+
+app.get('/api/health', (req, res) => {
   res.json({ ok: true, msg: 'Demo Autopilot running' });
 });
 
