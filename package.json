@@ -1,0 +1,20 @@
+{
+  "name": "demo-ci-cd-autopilot",
+  "version": "1.0.0",
+  "description": "Node demo app for CI/CD",
+  "main": "index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "echo Building && node -e \"console.log('build ok')\"",
+    "test": "echo Running tests && exit 0",
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
