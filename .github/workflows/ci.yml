@@ -43,6 +43,8 @@ jobs:
     needs: [build, security-scan]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - name: Compute Lowercase Repo
@@ -63,8 +65,10 @@ jobs:
             ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}:${{ github.sha }}
 
   deploy:
-    needs: [build, security-scan]
+    needs: [build, security-scan, docker-build]
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    environment: Production
     steps:
       - uses: actions/checkout@v4
       - name: Deploy to Azure Web App
