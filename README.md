@@ -1,5 +1,7 @@
 # Demo Node.js App for CI/CD
 
+[![CI Pipeline](https://github.com/Unigalactix/demo-ci-cd-autopilot/actions/workflows/ci.yml/badge.svg)](https://github.com/Unigalactix/demo-ci-cd-autopilot/actions/workflows/ci.yml)
+
 This is a demo Node.js application designed to showcase CI/CD automation.
 
 ## Autopilot Configuration
