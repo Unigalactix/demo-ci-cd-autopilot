@@ -35,6 +35,7 @@ jobs:
     outputs:
       has_frontend: ${{ steps.detect.outputs.has_frontend }}
       has_backend: ${{ steps.detect.outputs.has_backend }}
+      is_monolith: ${{ steps.detect.outputs.is_monolith }}
       fe_path: ${{ steps.detect.outputs.fe_path }}
       be_path: ${{ steps.detect.outputs.be_path }}
       has_acr: ${{ steps.secrets.outputs.has_acr }}
@@ -51,8 +52,16 @@ jobs:
           be="${{ github.event.inputs.backend_path }}"
           [ -z "$fe" ] && for d in frontend client app ui; do [ -d "$d" ] && fe="$d" && break; done
           [ -z "$be" ] && for d in backend server api svc; do [ -d "$d" ] && be="$d" && break; done
+          
+          # Detect monolith (root has package.json but no separate fe/be dirs)
+          is_monolith="false"
+          if [ -z "$fe" ] && [ -z "$be" ] && [ -f "package.json" ]; then
+            is_monolith="true"
+          fi
+          
           echo "fe_path=$fe" >> $GITHUB_OUTPUT
           echo "be_path=$be" >> $GITHUB_OUTPUT
+          echo "is_monolith=$is_monolith" >> $GITHUB_OUTPUT
           echo "has_frontend=$([ -n "$fe" ] && echo true || echo false)" >> $GITHUB_OUTPUT
           echo "has_backend=$([ -n "$be" ] && echo true || echo false)" >> $GITHUB_OUTPUT
       - id: secrets
@@ -64,6 +73,28 @@ jobs:
           echo "has_acr=$has_acr" >> $GITHUB_OUTPUT
           echo "has_azure_fe=$has_azure_fe" >> $GITHUB_OUTPUT
           echo "has_azure_be=$has_azure_be" >> $GITHUB_OUTPUT
+
+  build-monolith:
+    runs-on: ubuntu-latest
+    needs: preflight
+    if: ${{ needs.preflight.outputs.is_monolith == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        if: ${{ hashFiles('package.json') != '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install
+        run: |
+          if [ -f package.json ]; then npm ci; fi
+      - name: Build
+        run: |
+          if [ -f package.json ]; then npm run build; fi
+      - name: Test
+        run: |
+          if [ -f package.json ]; then npm test; fi
 
   build-frontend:
     runs-on: ubuntu-latest
@@ -134,8 +165,8 @@ jobs:
 
   security-scan:
     runs-on: ubuntu-latest
-    needs: [build-frontend, build-backend]
-    if: ${{ always() && (needs.build-frontend.result == 'success' || needs.build-backend.result == 'success' || needs.build-frontend.result == 'skipped' || needs.build-backend.result == 'skipped') }}
+    needs: [build-monolith, build-frontend, build-backend]
+    if: ${{ always() && (needs.build-monolith.result == 'success' || needs.build-frontend.result == 'success' || needs.build-backend.result == 'success' || needs.build-monolith.result == 'skipped' || needs.build-frontend.result == 'skipped' || needs.build-backend.result == 'skipped') }}
     permissions:
       security-events: write
       actions: read
@@ -148,6 +179,29 @@ jobs:
           languages: javascript
       - uses: github/codeql-action/autobuild@v3
       - uses: github/codeql-action/analyze@v3
+
+  docker-build-monolith:
+    runs-on: ubuntu-latest
+    needs: [preflight, build-monolith, security-scan]
+    if: ${{ needs.preflight.outputs.is_monolith == 'true' && needs.preflight.outputs.has_acr == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute Lowercase Repo
+        run: echo "REPO_LOWER=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+      - name: ACR Login
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}:latest
+            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}:${{ github.sha }}
 
   docker-build-frontend:
     runs-on: ubuntu-latest
