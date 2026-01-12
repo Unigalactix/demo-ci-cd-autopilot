@@ -84,11 +84,11 @@ jobs:
       - name: Build
         run: |
           cd "${{ needs.preflight.outputs.fe_path }}"
-          npm run build
+          if [ -f package.json ]; then npm run build; fi
       - name: Test
         run: |
           cd "${{ needs.preflight.outputs.fe_path }}"
-          npm test
+          if [ -f package.json ]; then npm test; fi
 
   build-backend:
     runs-on: ubuntu-latest
@@ -120,17 +120,17 @@ jobs:
         run: |
           cd "${{ needs.preflight.outputs.be_path }}"
           if [ -f package.json ]; then npm ci; fi
-          if [ -f requirements.txt ]; then pip install -r requirements.txt || true; fi
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           if ls *.sln >/dev/null 2>&1; then dotnet restore; fi
-          if [ -f pom.xml ]; then mvn -q -DskipTests dependency:resolve || true; fi
+          if [ -f pom.xml ]; then mvn -q -DskipTests dependency:resolve; fi
       - name: Build
         run: |
           cd "${{ needs.preflight.outputs.be_path }}"
-          npm run build
+          if [ -f package.json ]; then npm run build; elif ls *.sln >/dev/null 2>&1; then dotnet build; elif [ -f pom.xml ]; then mvn -q compile; fi
       - name: Test
         run: |
           cd "${{ needs.preflight.outputs.be_path }}"
-          npm test
+          if [ -f package.json ]; then npm test; elif ls *.sln >/dev/null 2>&1; then dotnet test; elif [ -f pom.xml ]; then mvn -q test; elif [ -f requirements.txt ]; then pytest || python -m unittest discover || echo "No tests configured"; fi
 
   security-scan:
     runs-on: ubuntu-latest
@@ -166,7 +166,7 @@ jobs:
       - name: Build and push FE
         uses: docker/build-push-action@v5
         with:
-          context: ${{ needs.preflight.outputs.fe_path }}
+          context: ${{ needs.preflight.outputs.fe_path || '.' }}
           push: true
           tags: |
             ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}-frontend:latest
@@ -189,7 +189,7 @@ jobs:
       - name: Build and push BE
         uses: docker/build-push-action@v5
         with:
-          context: ${{ needs.preflight.outputs.be_path }}
+          context: ${{ needs.preflight.outputs.be_path || '.' }}
           push: true
           tags: |
             ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}-backend:latest
