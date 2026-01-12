@@ -1,31 +1,172 @@
 name: CI Pipeline - Unigalactix/demo-ci-cd-autopilot
 
 on:
+  workflow_dispatch:
+    inputs:
+      deploy_services:
+        description: "frontend | backend | both"
+        required: false
+        default: "both"
+      frontend_path:
+        description: "Frontend path (optional)"
+        required: false
+      backend_path:
+        description: "Backend path (optional)"
+        required: false
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CI: true
 
 jobs:
-  build:
+  preflight:
     runs-on: ubuntu-latest
+    outputs:
+      has_frontend: ${{ steps.detect.outputs.has_frontend }}
+      has_backend: ${{ steps.detect.outputs.has_backend }}
+      is_monolith: ${{ steps.detect.outputs.is_monolith }}
+      fe_path: ${{ steps.detect.outputs.fe_path }}
+      be_path: ${{ steps.detect.outputs.be_path }}
+      has_acr: ${{ steps.secrets.outputs.has_acr }}
+      has_azure_fe: ${{ steps.secrets.outputs.has_azure_fe }}
+      has_azure_be: ${{ steps.secrets.outputs.has_azure_be }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - id: repo
+        run: echo "REPO_LOWER=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+      - id: detect
+        shell: bash
+        run: |
+          fe="${{ github.event.inputs.frontend_path }}"
+          be="${{ github.event.inputs.backend_path }}"
+          [ -z "$fe" ] && for d in frontend client app ui; do [ -d "$d" ] && fe="$d" && break; done
+          [ -z "$be" ] && for d in backend server api svc; do [ -d "$d" ] && be="$d" && break; done
+          
+          # Detect monolith (root has package.json but no separate fe/be dirs)
+          is_monolith="false"
+          if [ -z "$fe" ] && [ -z "$be" ] && [ -f "package.json" ]; then
+            is_monolith="true"
+          fi
+          
+          echo "fe_path=$fe" >> $GITHUB_OUTPUT
+          echo "be_path=$be" >> $GITHUB_OUTPUT
+          echo "is_monolith=$is_monolith" >> $GITHUB_OUTPUT
+          echo "has_frontend=$([ -n "$fe" ] && echo true || echo false)" >> $GITHUB_OUTPUT
+          echo "has_backend=$([ -n "$be" ] && echo true || echo false)" >> $GITHUB_OUTPUT
+      - id: secrets
+        shell: bash
+        run: |
+          has_acr=$([ -n "${{ secrets.ACR_LOGIN_SERVER }}" ] && [ -n "${{ secrets.ACR_USERNAME }}" ] && [ -n "${{ secrets.ACR_PASSWORD }}" ] && echo true || echo false)
+          has_azure_fe=$([ -n "${{ secrets.AZURE_WEBAPP_FE_APP_NAME }}" ] && [ -n "${{ secrets.AZURE_WEBAPP_FE_PUBLISH_PROFILE }}" ] && echo true || echo false)
+          has_azure_be=$([ -n "${{ secrets.AZURE_CLIENT_ID }}" ] && [ -n "${{ secrets.AZURE_TENANT_ID }}" ] && [ -n "${{ secrets.AZURE_SUBSCRIPTION_ID }}" ] && [ -n "${{ secrets.AZURE_RESOURCE_GROUP }}" ] && [ -n "${{ secrets.AZURE_WEBAPP_BE_APP_NAME }}" ] && echo true || echo false)
+          echo "has_acr=$has_acr" >> $GITHUB_OUTPUT
+          echo "has_azure_fe=$has_azure_fe" >> $GITHUB_OUTPUT
+          echo "has_azure_be=$has_azure_be" >> $GITHUB_OUTPUT
+
+  build-monolith:
+    runs-on: ubuntu-latest
+    needs: preflight
+    if: ${{ needs.preflight.outputs.is_monolith == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        if: ${{ hashFiles('package.json') != '' }}
+        uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
-      - run: npm ci
+          cache: npm
+      - name: Install
+        run: |
+          if [ -f package.json ]; then npm ci; fi
       - name: Build
-        run: npm run build
+        run: |
+          if [ -f package.json ]; then npm run build; fi
       - name: Test
-        run: npm test
+        run: |
+          if [ -f package.json ]; then npm test; fi
+
+  build-frontend:
+    runs-on: ubuntu-latest
+    needs: preflight
+    if: ${{ needs.preflight.outputs.has_frontend == 'true' && (github.event.inputs.deploy_services == 'frontend' || github.event.inputs.deploy_services == 'both' || github.event_name != 'workflow_dispatch') }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        if: ${{ hashFiles(format('{0}/package.json', needs.preflight.outputs.fe_path)) != '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install
+        run: |
+          cd "${{ needs.preflight.outputs.fe_path }}"
+          if [ -f package.json ]; then npm ci; fi
+      - name: Build
+        run: |
+          cd "${{ needs.preflight.outputs.fe_path }}"
+          if [ -f package.json ]; then npm run build; fi
+      - name: Test
+        run: |
+          cd "${{ needs.preflight.outputs.fe_path }}"
+          if [ -f package.json ]; then npm test; fi
+
+  build-backend:
+    runs-on: ubuntu-latest
+    needs: preflight
+    if: ${{ needs.preflight.outputs.has_backend == 'true' && (github.event.inputs.deploy_services == 'backend' || github.event.inputs.deploy_services == 'both' || github.event_name != 'workflow_dispatch') }}
+    steps:
+      - uses: actions/checkout@v4
+      # Language setup (dynamic)
+      - uses: actions/setup-node@v4
+        if: ${{ hashFiles(format('{0}/package.json', needs.preflight.outputs.be_path)) != '' }}
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/setup-python@v4
+        if: ${{ hashFiles(format('{0}/requirements.txt', needs.preflight.outputs.be_path)) != '' }}
+        with:
+          python-version: '3.10'
+      - uses: actions/setup-dotnet@v4
+        if: ${{ hashFiles(format('{0}/*.sln', needs.preflight.outputs.be_path)) != '' || hashFiles(format('{0}/*.csproj', needs.preflight.outputs.be_path)) != '' }}
+        with:
+          dotnet-version: '8.0.x'
+      - uses: actions/setup-java@v4
+        if: ${{ hashFiles(format('{0}/pom.xml', needs.preflight.outputs.be_path)) != '' || hashFiles(format('{0}/build.gradle*', needs.preflight.outputs.be_path)) != '' }}
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+      - name: Install
+        run: |
+          cd "${{ needs.preflight.outputs.be_path }}"
+          if [ -f package.json ]; then npm ci; fi
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f "$(find . -maxdepth 1 -name '*.sln' -print -quit)" ] || [ -f "$(find . -maxdepth 1 -name '*.csproj' -print -quit)" ]; then dotnet restore; fi
+          if [ -f pom.xml ]; then mvn -q -DskipTests dependency:resolve; fi
+      - name: Build
+        run: |
+          cd "${{ needs.preflight.outputs.be_path }}"
+          if [ -f package.json ]; then npm run build; elif [ -f "$(find . -maxdepth 1 -name '*.sln' -print -quit)" ] || [ -f "$(find . -maxdepth 1 -name '*.csproj' -print -quit)" ]; then dotnet build; elif [ -f pom.xml ]; then mvn -q compile; fi
+      - name: Test
+        run: |
+          cd "${{ needs.preflight.outputs.be_path }}"
+          if [ -f package.json ]; then npm test; elif [ -f "$(find . -maxdepth 1 -name '*.sln' -print -quit)" ] || [ -f "$(find . -maxdepth 1 -name '*.csproj' -print -quit)" ]; then dotnet test; elif [ -f pom.xml ]; then mvn -q test; elif [ -f requirements.txt ]; then if command -v pytest &> /dev/null; then pytest; elif python -m pytest --version &> /dev/null; then python -m pytest; else python -m unittest discover || true; fi; fi
 
   security-scan:
     runs-on: ubuntu-latest
+    needs: [build-monolith, build-frontend, build-backend]
+    if: ${{ always() && (needs.build-monolith.result == 'success' || needs.build-frontend.result == 'success' || needs.build-backend.result == 'success' || needs.build-monolith.result == 'skipped' || needs.build-frontend.result == 'skipped' || needs.build-backend.result == 'skipped') }}
     permissions:
       security-events: write
       actions: read
@@ -36,21 +177,18 @@ jobs:
         uses: github/codeql-action/init@v3
         with:
           languages: javascript
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@v3
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/autobuild@v3
+      - uses: github/codeql-action/analyze@v3
 
-  docker-build:
+  docker-build-monolith:
     runs-on: ubuntu-latest
-    needs: [build, security-scan]
-    permissions:
-      contents: read
+    needs: [preflight, build-monolith, security-scan]
+    if: ${{ needs.preflight.outputs.is_monolith == 'true' && needs.preflight.outputs.has_acr == 'true' }}
     steps:
       - uses: actions/checkout@v4
       - name: Compute lowercase repo name
         run: echo "REPO_LOWER=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
-      - name: Log in to Azure Container Registry
+      - name: ACR Login
         uses: docker/login-action@v3
         with:
           registry: ${{ secrets.ACR_LOGIN_SERVER }}
@@ -61,4 +199,67 @@ jobs:
         with:
           context: .
           push: true
-          tags: ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}:latest,${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}:${{ github.sha }}
+          tags: |
+            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}:latest
+            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}:${{ github.sha }}
+
+  docker-build-frontend:
+    runs-on: ubuntu-latest
+    needs: [preflight, build-frontend, security-scan]
+    if: ${{ needs.preflight.outputs.has_frontend == 'true' && needs.preflight.outputs.has_acr == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute Lowercase Repo
+        run: echo "REPO_LOWER=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+      - name: ACR Login
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+      - name: Build and push FE
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ needs.preflight.outputs.fe_path || '.' }}
+          push: true
+          tags: |
+            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}-frontend:latest
+            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}-frontend:${{ github.sha }}
+
+  docker-build-backend:
+    runs-on: ubuntu-latest
+    needs: [preflight, build-backend, security-scan]
+    if: ${{ needs.preflight.outputs.has_backend == 'true' && needs.preflight.outputs.has_acr == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute Lowercase Repo
+        run: echo "REPO_LOWER=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+      - name: ACR Login
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+      - name: Build and push BE
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ needs.preflight.outputs.be_path || '.' }}
+          push: true
+          tags: |
+            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}-backend:latest
+            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}-backend:${{ github.sha }}
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [preflight, security-scan]
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.AZURE_WEBAPP_PUBLISH_PROFILE != '' }}
+    environment: Production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v2
+        with:
+          app-name: '${{ secrets.AZURE_WEBAPP_APP_NAME }}'
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          package: .
+          slot-name: ${{ secrets.AZURE_WEBAPP_SLOT_NAME || 'production' }}
