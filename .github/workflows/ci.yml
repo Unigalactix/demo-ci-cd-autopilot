@@ -1,205 +1,124 @@
 name: CI Pipeline - Unigalactix/demo-ci-cd-autopilot
 
 on:
-  workflow_dispatch:
-    inputs:
-      deploy_services:
-        description: "frontend | backend | both"
-        required: false
-        default: "both"
-      frontend_path:
-        description: "Frontend path (optional)"
-        required: false
-      backend_path:
-        description: "Backend path (optional)"
-        required: false
   push:
     branches: ["main"]
   pull_request:
     branches: ["main"]
 
-permissions:
-  contents: read
-  security-events: write
-
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 env:
   CI: true
 
 jobs:
-  preflight:
+  # --- JOB 1: BUILD & TEST ---
+  build:
     runs-on: ubuntu-latest
-    outputs:
-      has_frontend: ${{ steps.detect.outputs.has_frontend }}
-      has_backend: ${{ steps.detect.outputs.has_backend }}
-      fe_path: ${{ steps.detect.outputs.fe_path }}
-      be_path: ${{ steps.detect.outputs.be_path }}
-      has_acr: ${{ steps.secrets.outputs.has_acr }}
-      has_azure_fe: ${{ steps.secrets.outputs.has_azure_fe }}
-      has_azure_be: ${{ steps.secrets.outputs.has_azure_be }}
-      has_publish_profile: ${{ steps.secrets.outputs.has_publish_profile }}
     steps:
       - uses: actions/checkout@v4
-      - id: repo
-        run: echo "REPO_LOWER=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
-      - id: detect
-        shell: bash
-        run: |
-          fe="${{ github.event.inputs.frontend_path }}"
-          be="${{ github.event.inputs.backend_path }}"
-          [ -z "$fe" ] && for d in frontend client app ui; do [ -d "$d" ] && fe="$d" && break; done
-          [ -z "$be" ] && for d in backend server api svc; do [ -d "$d" ] && be="$d" && break; done
-          echo "fe_path=$fe" >> $GITHUB_OUTPUT
-          echo "be_path=$be" >> $GITHUB_OUTPUT
-          echo "has_frontend=$([ -n "$fe" ] && echo true || echo false)" >> $GITHUB_OUTPUT
-          echo "has_backend=$([ -n "$be" ] && echo true || echo false)" >> $GITHUB_OUTPUT
-      - id: secrets
-        shell: bash
-        run: |
-          has_acr=$([ -n "${{ secrets.ACR_LOGIN_SERVER }}" ] && [ -n "${{ secrets.ACR_USERNAME }}" ] && [ -n "${{ secrets.ACR_PASSWORD }}" ] && echo true || echo false)
-          has_azure_fe=$([ -n "${{ secrets.AZURE_WEBAPP_FE_APP_NAME }}" ] && [ -n "${{ secrets.AZURE_WEBAPP_FE_PUBLISH_PROFILE }}" ] && echo true || echo false)
-          has_azure_be=$([ -n "${{ secrets.AZURE_CLIENT_ID }}" ] && [ -n "${{ secrets.AZURE_TENANT_ID }}" ] && [ -n "${{ secrets.AZURE_SUBSCRIPTION_ID }}" ] && [ -n "${{ secrets.AZURE_RESOURCE_GROUP }}" ] && [ -n "${{ secrets.AZURE_WEBAPP_BE_APP_NAME }}" ] && echo true || echo false)
-          has_publish_profile=$([ -n "${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}" ] && echo true || echo false)
-          echo "has_acr=$has_acr" >> $GITHUB_OUTPUT
-          echo "has_azure_fe=$has_azure_fe" >> $GITHUB_OUTPUT
-          echo "has_azure_be=$has_azure_be" >> $GITHUB_OUTPUT
-          echo "has_publish_profile=$has_publish_profile" >> $GITHUB_OUTPUT
 
-  build-frontend:
-    runs-on: ubuntu-latest
-    needs: preflight
-    if: ${{ needs.preflight.outputs.has_frontend == 'true' && (github.event.inputs.deploy_services == 'frontend' || github.event.inputs.deploy_services == 'both' || github.event_name != 'workflow_dispatch') }}
-    steps:
-      - uses: actions/checkout@v4
+      # Setup Node.js for the project
       - name: Setup Node.js
-        if: ${{ hashFiles(format('{0}/package.json', needs.preflight.outputs.fe_path)) != '' }}
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-      - name: Install
-        run: |
-          cd "${{ needs.preflight.outputs.fe_path }}"
-          if [ -f package.json ]; then npm ci; fi
-      - name: Build
-        run: |
-          cd "${{ needs.preflight.outputs.fe_path }}"
-          npm run build
-      - name: Test
-        run: |
-          cd "${{ needs.preflight.outputs.fe_path }}"
-          npm test
 
-  build-backend:
-    runs-on: ubuntu-latest
-    needs: preflight
-    if: ${{ needs.preflight.outputs.has_backend == 'true' && (github.event.inputs.deploy_services == 'backend' || github.event.inputs.deploy_services == 'both' || github.event_name != 'workflow_dispatch') }}
-    steps:
-      - uses: actions/checkout@v4
-      # Language setup (dynamic)
-      - uses: actions/setup-node@v4
-        if: ${{ hashFiles(format('{0}/package.json', needs.preflight.outputs.be_path)) != '' }}
-        with:
-          node-version: 20
-          cache: npm
-      - uses: actions/setup-python@v4
-        if: ${{ hashFiles(format('{0}/requirements.txt', needs.preflight.outputs.be_path)) != '' }}
-        with:
-          python-version: '3.10'
-      - uses: actions/setup-dotnet@v4
-        if: ${{ hashFiles(format('{0}/*.sln', needs.preflight.outputs.be_path)) != '' || hashFiles(format('{0}/*.csproj', needs.preflight.outputs.be_path)) != '' }}
-        with:
-          dotnet-version: '8.0.x'
-      - uses: actions/setup-java@v4
-        if: ${{ hashFiles(format('{0}/pom.xml', needs.preflight.outputs.be_path)) != '' || hashFiles(format('{0}/build.gradle*', needs.preflight.outputs.be_path)) != '' }}
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-          cache: maven
-      - name: Install
-        run: |
-          cd "${{ needs.preflight.outputs.be_path }}"
-          if [ -f package.json ]; then npm ci; fi
-          if [ -f requirements.txt ]; then pip install -r requirements.txt || true; fi
-          if ls *.sln >/dev/null 2>&1; then dotnet restore; fi
-          if [ -f pom.xml ]; then mvn -q -DskipTests dependency:resolve || true; fi
-      - name: Build
-        run: |
-          cd "${{ needs.preflight.outputs.be_path }}"
-          npm run build
-      - name: Test
-        run: |
-          cd "${{ needs.preflight.outputs.be_path }}"
-          npm test
+      # Install dependencies
+      - name: Install dependencies
+        run: npm ci
 
+      # Build the application
+      - name: Build
+        run: npm run build
+
+      # Run tests
+      - name: Test
+        run: npm test
+
+  # --- JOB 2: SECURITY SCANS ---
   security-scan:
     runs-on: ubuntu-latest
-    needs: [build-frontend, build-backend]
+    needs: build
     permissions:
       security-events: write
       actions: read
       contents: read
     steps:
       - uses: actions/checkout@v4
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
           languages: javascript
-      - uses: github/codeql-action/autobuild@v3
-      - uses: github/codeql-action/analyze@v3
 
-  docker-build-frontend:
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+
+  # --- JOB 3: CONTAINERIZATION (Conditional) ---
+  docker-build:
     runs-on: ubuntu-latest
-    needs: [preflight, build-frontend, security-scan]
-    if: ${{ needs.preflight.outputs.has_frontend == 'true' && needs.preflight.outputs.has_acr == 'true' }}
+    needs: [build, security-scan]
+    if: ${{ secrets.ACR_LOGIN_SERVER != '' && secrets.ACR_USERNAME != '' && secrets.ACR_PASSWORD != '' }}
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
-      - name: ACR Login
+
+      - name: Compute lowercase repo name
+        run: echo "REPO_LOWER=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      - name: Log in to Azure Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ secrets.ACR_LOGIN_SERVER }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
-      - name: Build and push FE
+
+      - name: Build and push
         uses: docker/build-push-action@v5
         with:
-          context: ${{ needs.preflight.outputs.fe_path }}
+          context: .
           push: true
           tags: |
-            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}-frontend:latest
-            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}-frontend:${{ github.sha }}
+            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}:latest
+            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}:${{ github.sha }}
 
-  docker-build-backend:
-    runs-on: ubuntu-latest
-    needs: [preflight, build-backend, security-scan]
-    if: ${{ needs.preflight.outputs.has_backend == 'true' && needs.preflight.outputs.has_acr == 'true' }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: ACR Login
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.ACR_LOGIN_SERVER }}
-          username: ${{ secrets.ACR_USERNAME }}
-          password: ${{ secrets.ACR_PASSWORD }}
-      - name: Build and push BE
-        uses: docker/build-push-action@v5
-        with:
-          context: ${{ needs.preflight.outputs.be_path }}
-          push: true
-          tags: |
-            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}-backend:latest
-            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}-backend:${{ github.sha }}
-
+  # --- JOB 4: DEPLOYMENT (Conditional) ---
   deploy:
     runs-on: ubuntu-latest
-    needs: [preflight, security-scan]
-    if: ${{ needs.preflight.outputs.has_publish_profile == 'true' }}
+    needs: [build, security-scan]
+    if: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE != '' && secrets.AZURE_WEBAPP_APP_NAME != '' }}
     environment: Production
     steps:
       - uses: actions/checkout@v4
+
+      # Setup Node.js for deployment
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # Install production dependencies
+      - name: Install dependencies
+        run: npm ci --omit=dev
+
+      # Validate deployment package
+      - name: Validate deployment package
+        run: |
+          if [ ! -f "index.js" ]; then
+            echo "Error: index.js not found"
+            exit 1
+          fi
+          if [ ! -f "public/index.html" ]; then
+            echo "Error: public/index.html not found"
+            exit 1
+          fi
+          echo "Deployment package validated successfully"
+
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v2
         with:
