@@ -64,13 +64,17 @@ jobs:
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
 
-  # --- JOB 3: CONTAINERIZATION (Conditional) ---
+  # --- JOB 3: CONTAINERIZATION ---
   docker-build:
     runs-on: ubuntu-latest
     needs: [build, security-scan]
-    # FIXED: Removed the invalid 'if: secrets...' check here
     permissions:
       contents: read
+    # Map secrets to env vars so they can be checked in 'if' conditions
+    env:
+      ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -78,31 +82,35 @@ jobs:
         run: echo "REPO_LOWER=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
 
       - name: Log in to Azure Container Registry
-        # ADDED: Check for secret existence here
-        if: secrets.ACR_LOGIN_SERVER != ''
+        # Check env var (safe), not secret directly
+        if: env.ACR_LOGIN_SERVER != ''
         uses: docker/login-action@v3
         with:
-          registry: ${{ secrets.ACR_LOGIN_SERVER }}
-          username: ${{ secrets.ACR_USERNAME }}
-          password: ${{ secrets.ACR_PASSWORD }}
+          registry: ${{ env.ACR_LOGIN_SERVER }}
+          username: ${{ env.ACR_USERNAME }}
+          password: ${{ env.ACR_PASSWORD }}
 
       - name: Build and push
-        # ADDED: Check for secret existence here
-        if: secrets.ACR_LOGIN_SERVER != ''
+        if: env.ACR_LOGIN_SERVER != ''
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           tags: |
-            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}:latest
-            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}:${{ github.sha }}
+            ${{ env.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}:latest
+            ${{ env.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}:${{ github.sha }}
 
-  # --- JOB 4: DEPLOYMENT (Conditional) ---
+  # --- JOB 4: DEPLOYMENT ---
   deploy:
     runs-on: ubuntu-latest
     needs: [build, security-scan]
-    # FIXED: Removed the invalid 'if: secrets...' check here
-    environment: Production
+    # REMOVED: environment: Production (Now uses Repository Secrets)
+    
+    # Map secrets to env vars for safe checking
+    env:
+      AZURE_WEBAPP_PUBLISH_PROFILE: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+      AZURE_WEBAPP_APP_NAME: ${{ secrets.AZURE_WEBAPP_APP_NAME }}
+      AZURE_WEBAPP_SLOT_NAME: ${{ secrets.AZURE_WEBAPP_SLOT_NAME }}
     steps:
       - uses: actions/checkout@v4
 
@@ -112,11 +120,11 @@ jobs:
           node-version: 20
 
       - name: Deploy to Azure Web App
-        # ADDED: Check for secret existence here
-        if: secrets.AZURE_WEBAPP_PUBLISH_PROFILE != ''
+        # Check env var (safe), not secret directly
+        if: env.AZURE_WEBAPP_PUBLISH_PROFILE != ''
         uses: azure/webapps-deploy@v2
         with:
-          app-name: '${{ secrets.AZURE_WEBAPP_APP_NAME }}'
-          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          app-name: ${{ env.AZURE_WEBAPP_APP_NAME }}
+          publish-profile: ${{ env.AZURE_WEBAPP_PUBLISH_PROFILE }}
           package: .
-          slot-name: ${{ secrets.AZURE_WEBAPP_SLOT_NAME }}
+          slot-name: ${{ env.AZURE_WEBAPP_SLOT_NAME }}
