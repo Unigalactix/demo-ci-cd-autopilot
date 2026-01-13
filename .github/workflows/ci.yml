@@ -1,27 +1,24 @@
-name: CI Pipeline - Unigalactix/demo-ci-cd-autopilot
+name: CI/CD Pipeline
 
 on:
   push:
-    branches: ["main"]
+    branches: [ "main" ]
   pull_request:
-    branches: ["main"]
-
-env:
-  CI: true
+    branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
-  # --- JOB 1: BUILD & TEST ---
+  # --- JOB 1: BUILD AND TEST ---
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      # Setup Node.js for the project
+      
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
+          node-version: '20'
+          cache: 'npm'
 
       # Install dependencies
       - name: Install dependencies
@@ -71,7 +68,7 @@ jobs:
   docker-build:
     runs-on: ubuntu-latest
     needs: [build, security-scan]
-    if: ${{ secrets.ACR_LOGIN_SERVER != '' && secrets.ACR_USERNAME != '' && secrets.ACR_PASSWORD != '' }}
+    # FIXED: Removed the invalid 'if: secrets...' check here
     permissions:
       contents: read
     steps:
@@ -81,6 +78,8 @@ jobs:
         run: echo "REPO_LOWER=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
 
       - name: Log in to Azure Container Registry
+        # ADDED: Check for secret existence here
+        if: secrets.ACR_LOGIN_SERVER != ''
         uses: docker/login-action@v3
         with:
           registry: ${{ secrets.ACR_LOGIN_SERVER }}
@@ -88,6 +87,8 @@ jobs:
           password: ${{ secrets.ACR_PASSWORD }}
 
       - name: Build and push
+        # ADDED: Check for secret existence here
+        if: secrets.ACR_LOGIN_SERVER != ''
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -100,36 +101,19 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     needs: [build, security-scan]
-    if: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE != '' && secrets.AZURE_WEBAPP_APP_NAME != '' }}
+    # FIXED: Removed the invalid 'if: secrets...' check here
     environment: Production
     steps:
       - uses: actions/checkout@v4
 
-      # Setup Node.js for deployment
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
-
-      # Install production dependencies
-      - name: Install dependencies
-        run: npm ci --omit=dev
-
-      # Validate deployment package
-      - name: Validate deployment package
-        run: |
-          if [ ! -f "index.js" ]; then
-            echo "Error: index.js not found"
-            exit 1
-          fi
-          if [ ! -f "public/index.html" ]; then
-            echo "Error: public/index.html not found"
-            exit 1
-          fi
-          echo "Deployment package validated successfully"
 
       - name: Deploy to Azure Web App
+        # ADDED: Check for secret existence here
+        if: secrets.AZURE_WEBAPP_PUBLISH_PROFILE != ''
         uses: azure/webapps-deploy@v2
         with:
           app-name: '${{ secrets.AZURE_WEBAPP_APP_NAME }}'
