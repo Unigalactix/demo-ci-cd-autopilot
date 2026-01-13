@@ -35,6 +35,18 @@ jobs:
       - name: Test
         run: npm test
 
+      # Upload job logs as artifacts for debugging
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            npm-debug.log*
+            yarn-error.log*
+          retention-days: 7
+          if-no-files-found: ignore
+
   # --- JOB 2: SECURITY SCANS ---
   security-scan:
     runs-on: ubuntu-latest
