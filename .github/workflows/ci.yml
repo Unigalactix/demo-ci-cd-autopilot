@@ -1,130 +1,113 @@
-name: CI/CD Pipeline
+name: CI Pipeline - Unigalactix/demo-ci-cd-autopilot
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
-  workflow_dispatch:
-
+    branches: ["main"]
+ 
+env:
+  CI: true
+  BUILD_COMMAND: npm run build
+  TEST_COMMAND: npm test
+  CODEQL_LANGUAGE: javascript
+ 
 jobs:
-  # --- JOB 1: BUILD AND TEST ---
+ 
+  # -------------------------------------------------
+  # JOB 1: BUILD & TEST
+  # -------------------------------------------------
   build:
     runs-on: ubuntu-latest
+ 
     steps:
-      - uses: actions/checkout@v4
-      
+      - name: Checkout source
+        uses: actions/checkout@v4
+ 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
-
-      # Install dependencies
+          node-version: 20
+          cache: npm
+ 
       - name: Install dependencies
         run: npm ci
-
-      # Build the application
+ 
       - name: Build
-        run: npm run build
-
-      # Run tests
+        run: ${{ env.BUILD_COMMAND }}
+ 
       - name: Test
-        run: npm test
-
-      # Upload job logs as artifacts for debugging
-      - name: Upload build logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs
-          path: npm-debug.log*
-          retention-days: 7
-          if-no-files-found: ignore
-
-  # --- JOB 2: SECURITY SCANS ---
+        run: ${{ env.TEST_COMMAND }}
+ 
+  # -------------------------------------------------
+  # JOB 2: SECURITY SCANS
+  # -------------------------------------------------
   security-scan:
     runs-on: ubuntu-latest
-    needs: build
     permissions:
       security-events: write
       actions: read
       contents: read
+ 
     steps:
       - uses: actions/checkout@v4
-
+ 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
-          languages: javascript
-
+          languages: ${{ env.CODEQL_LANGUAGE }}
+ 
       - name: Autobuild
         uses: github/codeql-action/autobuild@v3
-
+ 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
-
-  # --- JOB 3: CONTAINERIZATION ---
+ 
+  # -------------------------------------------------
+  # JOB 3: DOCKER BUILD & PUSH
+  # -------------------------------------------------
   docker-build:
     runs-on: ubuntu-latest
     needs: [build, security-scan]
-    permissions:
-      contents: read
-    # Map secrets to env vars so they can be checked in 'if' conditions
-    env:
-      ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
-      ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
-      ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+ 
     steps:
       - uses: actions/checkout@v4
-
+ 
       - name: Compute lowercase repo name
-        run: echo "REPO_LOWER=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
-
-      - name: Log in to Azure Container Registry
-        # Check env var (safe), not secret directly
-        if: env.ACR_LOGIN_SERVER != ''
+        run: |
+          echo "REPO_LOWER=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+ 
+      - name: Login to ACR
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.ACR_LOGIN_SERVER }}
-          username: ${{ env.ACR_USERNAME }}
-          password: ${{ env.ACR_PASSWORD }}
-
-      - name: Build and push
-        if: env.ACR_LOGIN_SERVER != ''
+          registry: ${{ secrets.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+ 
+      - name: Build and push image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           tags: |
-            ${{ env.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}:latest
-            ${{ env.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}:${{ github.sha }}
-
-  # --- JOB 4: DEPLOYMENT ---
+            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}:latest
+            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}:${{ github.sha }}
+ 
+  # -------------------------------------------------
+  # JOB 4: DEPLOY (Publish Profile, Image-based)
+  # -------------------------------------------------
   deploy:
     runs-on: ubuntu-latest
-    needs: [build, security-scan]
-    # REMOVED: environment: Production (Now uses Repository Secrets)
-    
-    # Map secrets to env vars for safe checking
-    env:
-      AZURE_WEBAPP_PUBLISH_PROFILE: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-      AZURE_WEBAPP_APP_NAME: ${{ secrets.AZURE_WEBAPP_APP_NAME }}
-      AZURE_WEBAPP_SLOT_NAME: ${{ secrets.AZURE_WEBAPP_SLOT_NAME }}
+    needs: docker-build
+ 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
+      - name: Compute lowercase repo name
+        run: |
+          echo "REPO_LOWER=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+ 
       - name: Deploy to Azure Web App
-        # Check env var (safe), not secret directly
-        if: env.AZURE_WEBAPP_PUBLISH_PROFILE != ''
         uses: azure/webapps-deploy@v2
         with:
-          app-name: ${{ env.AZURE_WEBAPP_APP_NAME }}
-          publish-profile: ${{ env.AZURE_WEBAPP_PUBLISH_PROFILE }}
-          package: .
-          slot-name: ${{ env.AZURE_WEBAPP_SLOT_NAME }}
+          app-name: ${{ secrets.AZURE_WEBAPP_APP_NAME }}
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          images: ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}:${{ github.sha }}
