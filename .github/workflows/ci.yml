@@ -41,9 +41,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-logs
-          path: |
-            npm-debug.log*
-            yarn-error.log*
+          path: npm-debug.log*
           retention-days: 7
           if-no-files-found: ignore
 
